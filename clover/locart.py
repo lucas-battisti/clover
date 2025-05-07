@@ -8,6 +8,7 @@ from sklearn.metrics import mean_squared_error
 from sklearn.model_selection import train_test_split
 from sklearn.tree import DecisionTreeRegressor, plot_tree
 from sklearn.ensemble import RandomForestRegressor
+from sklearn.ensemble import GradientBoostingRegressor
 from sklearn.preprocessing import StandardScaler
 from operator import itemgetter
 import scipy.stats as st
@@ -225,7 +226,7 @@ class LocartSplit(BaseEstimator):
             for leaf in self.leaf_idx:
                 if self.split_calib:
                     current_res = res_calib_test[leafs_idx == leaf]
-
+                    
                     # correcting 1 - alpha
                     n = current_res.shape[0]
 
@@ -252,9 +253,41 @@ class LocartSplit(BaseEstimator):
             else:
                 self.RF.fit(X_calib, res)
                 self.cutoffs = self.create_rf_cutoffs(X_calib, res)
+        # gradient boosting tree application
+        elif self.cart_type == "Boost":
+            self.boost = GradientBoostingRegressor(
+                random_state=random_seed
+            ).set_params(**kwargs)
+            if self.split_calib:
+                self.boost.fit(X_calib_train, res_calib_train)
+                all_leaves = self.boost.apply(X_calib_test).astype(str)
+                leafs_idx = np.apply_along_axis('-'.join, axis=1, arr=all_leaves)
+            else:
+                self.boost.fit(X_calib, res)
+                all_leaves = self.boost.apply(X_calib).astype(str)
+                leafs_idx = np.apply_along_axis('-'.join, axis=1, arr=all_leaves)
+            
+            self.leaf_idx = np.unique(leafs_idx)
+            self.cutoffs = {}
 
+            for leaf in self.leaf_idx:
+                if self.split_calib:
+                    current_res = res_calib_test[leafs_idx == leaf]
+                    
+                    n = current_res.shape[0]
+                    
+                    self.cutoffs[leaf] = np.quantile(
+                        current_res, q=np.ceil((n + 1) * (1 - self.alpha)) / n
+                    )
+                else:
+                    current_res = res[leafs_idx == leaf]
+
+                    n = current_res.shape[0]
+
+                    self.cutoffs[leaf] = np.quantile(
+                        current_res, q=np.ceil((n + 1) * (1 - self.alpha)) / n
+                    )
         # TODO: implement RFCDE version
-
         return self.cutoffs
 
     def compute_difficulty(self, X):
@@ -460,6 +493,15 @@ class LocartSplit(BaseEstimator):
             # obtaining cutoff means
             final_cutoffs = np.mean(cutoffs_matrix, axis=1)
             pred = self.nc_score.predict(X, final_cutoffs)
+
+        if self.cart_type == "Boost" and type_model == "Tree":
+            # TODO: weightning weigthning
+            all_leaves = self.boost.apply(X_tree).astype(str)
+            leaves_idx = np.apply_along_axis('-'.join, axis=1, arr=all_leaves)
+            
+            # obtaining order of leaves
+            cutoffs = np.array(itemgetter(*leaves_idx)(self.cutoffs))
+            pred = self.nc_score.predict(X, cutoffs)
 
         elif type_model == "euclidean":
             idx = self.uniform_apply(X)
