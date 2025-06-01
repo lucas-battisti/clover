@@ -101,6 +101,9 @@ class LocartSplit(BaseEstimator):
         m=1000,
         h=1,
         projections_seed=1250,
+        min_samples_parts = 100,
+        max_n_estimators = 50,
+        adaptative_parts = False,
         **kwargs
     ):
         """
@@ -255,38 +258,134 @@ class LocartSplit(BaseEstimator):
                 self.cutoffs = self.create_rf_cutoffs(X_calib, res)
         # gradient boosting tree application
         elif self.cart_type == "Boost":
-            self.boost = GradientBoostingRegressor(
-                random_state=random_seed
-            ).set_params(**kwargs)
-            if self.split_calib:
-                self.boost.fit(X_calib_train, res_calib_train)
-                all_leaves = self.boost.apply(X_calib_test).astype(str)
-                leafs_idx = np.apply_along_axis('-'.join, axis=1, arr=all_leaves)
-            else:
-                self.boost.fit(X_calib, res)
-                all_leaves = self.boost.apply(X_calib).astype(str)
-                leafs_idx = np.apply_along_axis('-'.join, axis=1, arr=all_leaves)
             
-            self.leaf_idx = np.unique(leafs_idx)
-            self.cutoffs = {}
+            if not self.split_calib:
+                X_calib_train, X_calib_test = X_calib, X_calib
+                res_calib_train, res_calib_test = res, res
+
+            self.boost = GradientBoostingRegressor(
+                random_state=random_seed, loss='quantile',
+                n_estimators= max_n_estimators,
+            ).set_params(**kwargs)
+
+            self.boost.fit(X_calib_train, res_calib_train)
+            all_leaves = self.boost.apply(X_calib_test).astype(int).astype(str)
+            
+            if not adaptative_parts:
+                self.n_estimators_boost = 0
+                n_sample_parts = np.unique(all_leaves[:, 0],
+                                           return_counts=True, axis=0)[1]
+
+                while ~np.any(n_sample_parts < min_samples_parts) or self.n_estimators_boost < max_n_estimators:
+                    self.n_estimators_boost += 1                    
+
+                    # calculate size of parts n_estimators_boost + 1
+                    n_sample_parts = np.unique(all_leaves[:, 0:self.n_estimators_boost+1],
+                                           return_counts=True, axis=0)[1]                   
+                
+                leafs_idx = np.apply_along_axis('-'.join, axis=1, arr=all_leaves[:, 0:self.n_estimators_boost])
+                self.leaf_idx = np.unique(leafs_idx)
+                self.cutoffs = {}
+
+            if adaptative_parts:
+                self.adaptative_parts = adaptative_parts
+                self.leaf_idx = np.array([])
+                leafs_idx = np.apply_along_axis('-'.join, axis=1, arr=all_leaves[:, 0:1]).astype(object)
+                self.cutoffs = {}
+
+                for i in range(max_n_estimators):
+
+                    leafs_idx_i = np.apply_along_axis('-'.join, axis=1, arr=all_leaves[:, 0:i+1])
+
+                    unique = np.unique(leafs_idx_i, return_counts=True, axis=0)
+
+                    print(unique)
+
+                    if np.all(unique[1] < min_samples_parts):
+                        self.max_n_estimators = i - 1
+                        break
+
+                    valid_parts = unique[0][np.where(unique[1] > min_samples_parts)]
+                    self.leaf_idx = np.append(self.leaf_idx, valid_parts)
+
+                    for part in valid_parts:
+
+                        leafs_idx[np.where(leafs_idx_i == part)] = part.astype(str)
+
+                        current_res = res_calib_test[np.where(leafs_idx_i == part)]
+
+                        n = current_res.shape[0]
+                        q = np.ceil((n + 1) * (1 - self.alpha)) / n
+                    
+                        if 0 <= q <= 1:
+                            self.cutoffs[part] = np.quantile(
+                                current_res, q = q
+                            )
+                        else:
+                            raise Exception("Some of the parts are not large enough for quantile calculation; increase the 'min_samples_part'.")
+                        
+                self.leaf_idx = np.unique(leafs_idx)
+                self.cutoffs = {part: self.cutoffs[part] for part in self.leaf_idx}
+
+                return self.cutoffs
+                  
+
+
+            if not adaptative_parts:
+                i = 0
+                n_sample_parts = np.unique(all_leaves[:, 0:i+1],
+                                           return_counts=True, axis=0)[1]
+
+                while ~np.any(n_sample_parts < min_samples_parts) or i < max_n_estimators:
+                    i += 1                    
+
+                    n_sample_parts = np.unique(all_leaves[:, 0:i+1],
+                                           return_counts=True, axis=0)[1]                   
+                
+                self.n_estimators_boost = i
+                leafs_idx = np.apply_along_axis('-'.join, axis=1, arr=all_leaves[:, 0:i])
+                self.leaf_idx = np.unique(leafs_idx)
+                self.cutoffs = {}
+
+            n = res_calib_test.shape[0]
+
+            self.cutoff_global = np.quantile(
+                res_calib_test, q=np.ceil((n + 1) * (1 - self.alpha)) / n
+                )
 
             for leaf in self.leaf_idx:
-                if self.split_calib:
+                current_res = res_calib_test[leafs_idx == leaf]
+                    
+                n = current_res.shape[0]
+                q = np.ceil((n + 1) * (1 - self.alpha)) / n
+                    
+                if 0 <= q <= 1:
+                    self.cutoffs[leaf] = np.quantile(
+                        current_res, q = q
+                    )
+                else:
+                    raise Exception("Some of the parts are not large enough for quantile calculation; increase the 'min_samples_part'.")
+                        
+            if self.split_calib:
+
+                n = res_calib_test.shape[0]
+
+                self.cutoff_global = np.quantile(
+                        res_calib_test, q=np.ceil((n + 1) * (1 - self.alpha)) / n
+                    )
+
+                for leaf in self.leaf_idx:
                     current_res = res_calib_test[leafs_idx == leaf]
                     
                     n = current_res.shape[0]
+                    q = np.ceil((n + 1) * (1 - self.alpha)) / n
                     
-                    self.cutoffs[leaf] = np.quantile(
-                        current_res, q=np.ceil((n + 1) * (1 - self.alpha)) / n
-                    )
-                else:
-                    current_res = res[leafs_idx == leaf]
-
-                    n = current_res.shape[0]
-
-                    self.cutoffs[leaf] = np.quantile(
-                        current_res, q=np.ceil((n + 1) * (1 - self.alpha)) / n
-                    )
+                    if 0 <= q <= 1:
+                        self.cutoffs[leaf] = np.quantile(
+                            current_res, q = q
+                        )
+                    else:
+                        self.cutoffs[leaf] = self.cutoff_global                         
         # TODO: implement RFCDE version
         return self.cutoffs
 
@@ -496,11 +595,12 @@ class LocartSplit(BaseEstimator):
 
         if self.cart_type == "Boost" and type_model == "Tree":
             # TODO: weightning weigthning
-            all_leaves = self.boost.apply(X_tree).astype(str)
-            leaves_idx = np.apply_along_axis('-'.join, axis=1, arr=all_leaves)
-            
+            all_leaves = self.boost.apply(X_tree).astype(int).astype(str)
+            leaves_idx = np.apply_along_axis('-'.join, axis=1, arr=all_leaves[:, 0:self.n_estimators_boost])
+
             # obtaining order of leaves
-            cutoffs = np.array(itemgetter(*leaves_idx)(self.cutoffs))
+            #cutoffs = np.array(itemgetter(*leaves_idx)(self.cutoffs))
+            cutoffs = np.array([self.cutoffs.get(key, self.cutoff_global) for key in leaves_idx])
             pred = self.nc_score.predict(X, cutoffs)
 
         elif type_model == "euclidean":
