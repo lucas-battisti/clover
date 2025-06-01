@@ -365,27 +365,7 @@ class LocartSplit(BaseEstimator):
                     )
                 else:
                     raise Exception("Some of the parts are not large enough for quantile calculation; increase the 'min_samples_part'.")
-                        
-            if self.split_calib:
-
-                n = res_calib_test.shape[0]
-
-                self.cutoff_global = np.quantile(
-                        res_calib_test, q=np.ceil((n + 1) * (1 - self.alpha)) / n
-                    )
-
-                for leaf in self.leaf_idx:
-                    current_res = res_calib_test[leafs_idx == leaf]
-                    
-                    n = current_res.shape[0]
-                    q = np.ceil((n + 1) * (1 - self.alpha)) / n
-                    
-                    if 0 <= q <= 1:
-                        self.cutoffs[leaf] = np.quantile(
-                            current_res, q = q
-                        )
-                    else:
-                        self.cutoffs[leaf] = self.cutoff_global                         
+                                               
         # TODO: implement RFCDE version
         return self.cutoffs
 
@@ -599,8 +579,7 @@ class LocartSplit(BaseEstimator):
             leaves_idx = np.apply_along_axis('-'.join, axis=1, arr=all_leaves[:, 0:self.n_estimators_boost])
 
             # obtaining order of leaves
-            #cutoffs = np.array(itemgetter(*leaves_idx)(self.cutoffs))
-            cutoffs = np.array([self.cutoffs.get(key, self.cutoff_global) for key in leaves_idx])
+            cutoffs = np.array(itemgetter(*leaves_idx)(self.cutoffs))
             pred = self.nc_score.predict(X, cutoffs)
 
         elif type_model == "euclidean":
