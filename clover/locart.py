@@ -127,6 +127,7 @@ class LocartSplit(BaseEstimator):
 
         Ouput: Vector of cutoffs.
         """
+
         res = self.nc_score.compute(X_calib, y_calib)
 
         if self.weighting:
@@ -140,8 +141,10 @@ class LocartSplit(BaseEstimator):
                 X_calib_test,
                 res_calib_train,
                 res_calib_test,
+                y_calib_train,
+                y_calib_test,
             ) = train_test_split(
-                X_calib, res, test_size=1 - cart_train_size, random_state=random_seed
+                X_calib, res, y_calib, test_size=1 - cart_train_size, random_state=random_seed
             )
             if random_projections and self.cart_type == "CART":
                 self.rp = True
@@ -258,10 +261,14 @@ class LocartSplit(BaseEstimator):
                 self.cutoffs = self.create_rf_cutoffs(X_calib, res)
         # gradient boosting tree application
         elif self.cart_type == "Boost":
+
+            #res_calib_train, res_calib_test = y_calib_train, y_calib_test
             
             if not self.split_calib:
                 X_calib_train, X_calib_test = X_calib, X_calib
                 res_calib_train, res_calib_test = res, res
+
+            
 
             self.boost = GradientBoostingRegressor(
                 random_state=random_seed, loss='quantile',
@@ -272,11 +279,12 @@ class LocartSplit(BaseEstimator):
             all_leaves = self.boost.apply(X_calib_test).astype(int).astype(str)
             
             if not adaptative_parts:
+
                 self.n_estimators_boost = 0
                 n_sample_parts = np.unique(all_leaves[:, 0],
                                            return_counts=True, axis=0)[1]
 
-                while ~np.any(n_sample_parts < min_samples_parts) or self.n_estimators_boost < max_n_estimators:
+                while ~np.any(n_sample_parts < min_samples_parts) and self.n_estimators_boost < max_n_estimators:
                     self.n_estimators_boost += 1                    
 
                     # calculate size of parts n_estimators_boost + 1
@@ -328,24 +336,6 @@ class LocartSplit(BaseEstimator):
                 self.cutoffs = {part: self.cutoffs[part] for part in self.leaf_idx}
 
                 return self.cutoffs
-                  
-
-
-            if not adaptative_parts:
-                i = 0
-                n_sample_parts = np.unique(all_leaves[:, 0:i+1],
-                                           return_counts=True, axis=0)[1]
-
-                while ~np.any(n_sample_parts < min_samples_parts) or i < max_n_estimators:
-                    i += 1                    
-
-                    n_sample_parts = np.unique(all_leaves[:, 0:i+1],
-                                           return_counts=True, axis=0)[1]                   
-                
-                self.n_estimators_boost = i
-                leafs_idx = np.apply_along_axis('-'.join, axis=1, arr=all_leaves[:, 0:i])
-                self.leaf_idx = np.unique(leafs_idx)
-                self.cutoffs = {}
 
             n = res_calib_test.shape[0]
 
